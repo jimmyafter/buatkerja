@@ -50,8 +50,9 @@ declare t text;
 begin
   foreach t in array array[
     'profiles','customer_accounts','customer_members','properties','service_requests',
-    'quotations','quotation_versions','bookings','jobs','job_assignments','job_verifications',
-    'change_order_requests','change_orders','invoices','payments',
+    'quotations','quotation_versions','quotation_items','bookings','jobs','job_assignments','job_verifications',
+    'change_order_requests','change_orders','change_order_items','invoices','invoice_items','payments',
+    'service_request_attachments',
     'outsource_partners','workers','internal_notes']
   loop
     execute format('create trigger audit_row after insert or update or delete on public.%I

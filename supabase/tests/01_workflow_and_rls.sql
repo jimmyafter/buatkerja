@@ -22,7 +22,7 @@ begin if a is distinct from b then raise exception 'ASSERT % : got %, expected %
 do $$
 declare
   cA uuid := 'a0000000-0000-0000-0000-00000000000a'; cB uuid := 'b0000000-0000-0000-0000-00000000000b';
-  adm uuid := 'ad000000-0000-0000-0000-0000000000ad'; sup uuid := '50000000-0000-0000-0000-000000000005';
+  adm uuid := 'ad000000-0000-0000-0000-0000000000ad'; fin uuid := 'f1000000-0000-0000-0000-0000000000f1'; sa uuid := '5a000000-0000-0000-0000-0000000000a5'; sup uuid := '50000000-0000-0000-0000-000000000005';
   u1 uuid := '11000000-0000-0000-0000-000000000001'; u2 uuid := '22000000-0000-0000-0000-000000000002';
   u3 uuid := '33000000-0000-0000-0000-000000000003';
   w1 uuid; w2 uuid; w3 uuid; partner uuid;
@@ -32,9 +32,11 @@ declare
 begin
   -- ---------- seed users (profiles auto-created as customers) ----------
   insert into auth.users (id, email) values
-    (cA,'a@x.my'),(cB,'b@x.my'),(adm,'admin@x.my'),(sup,'sup@x.my'),(u1,'w1@x.my'),(u2,'w2@x.my'),(u3,'w3@x.my');
+    (cA,'a@x.my'),(cB,'b@x.my'),(adm,'ops@x.my'),(fin,'fin@x.my'),(sa,'super@x.my'),(sup,'sup@x.my'),(u1,'w1@x.my'),(u2,'w2@x.my'),(u3,'w3@x.my');
   perform test.eq((select role::text from profiles where id = cA), 'customer', 'new users default to customer');
-  update profiles set role='admin' where id = adm;
+  update profiles set role='ops_admin' where id = adm;
+  update profiles set role='finance_admin' where id = fin;
+  update profiles set role='super_admin' where id = sa;
   update profiles set role='supervisor' where id = sup;
   update profiles set role='worker' where id in (u1,u2,u3);
   insert into workers (profile_id, worker_type, approval_status, approved_by, approved_at) values (u1,'employee','approved',adm,now()) returning id into w1;
@@ -190,16 +192,20 @@ begin
 
   -- ---------- invoicing ----------
   perform test.as_user(adm);
+  perform test.fails(format($q$select public.create_invoice_draft(%L)$q$, job), 'ops admin cannot raise invoices');
+  perform test.as_user(fin);
   perform test.fails(format($q$select public.create_invoice_draft(%L)$q$, job), 'invoice while CO awaits customer');
+  perform test.as_user(adm);
   perform test.fails(format($q$select public.record_change_order_response(%L,'approve','short')$q$, co), 'offline CO approval without evidence');
   perform public.record_change_order_response(co, 'approve', 'Mr Ali approved by WhatsApp 24 Nov 15:10');
   perform test.eq((select response_channel from change_orders where id=co), 'admin_recorded', 'channel flagged admin_recorded');
-  perform test.eq((select responded_by from change_orders where id=co), adm, 'admin recorded as responder');
+  perform test.eq((select responded_by from change_orders where id=co), adm, 'ops admin recorded as responder');
   perform test.as_user(cA);
   perform test.eq(test.count($q$select 1 from service_request_events where note like '%recorded by our team on your behalf%'$q$), 1::bigint, 'customer sees the recorded-on-behalf note');
   perform test.eq((select response_channel from quotation_versions where id=ver2), 'portal', 'customer approval channel is portal');
-  perform test.as_user(adm);
-  perform test.as_user(adm);
+  perform test.as_user(fin);
+  perform test.as_user(fin);
+  perform test.as_user(fin);
   inv := public.create_invoice_draft(job);
   select total::text into s from invoices where id = inv;
   perform test.eq(s, '583.20', 'invoice = approved v2 (475.20) + approved CO (108.00)');
@@ -208,21 +214,21 @@ begin
   perform test.fails(format($q$insert into invoice_items (invoice_id,position,description,quantity,unit_price,source_type,source_id) values (%L,9,'Made up',1,500,'quotation_item',(select id from quotation_items where version_id=%L limit 1))$q$, inv, ver2), 'invoice line not matching approved line');
   perform test.fails(format($q$insert into invoice_items (invoice_id,position,description,quantity,unit_price,source_type,source_id) select %L,9,description,quantity,unit_price,'quotation_item',id from quotation_items where version_id=%L limit 1$q$, inv, ver1), 'line from superseded (unapproved) version');
   perform test.as_user(cA); perform test.eq(test.count('select 1 from invoices'), 0::bigint, 'draft invoice hidden from customer');
-  perform test.as_user(adm);
+  perform test.as_user(fin);
   perform test.fails(format($q$update invoices set status='paid' where id=%L$q$, inv), 'admin marks invoice paid directly');
-  perform test.fails(format($q$insert into payments (invoice_id,account_id,amount,method,recorded_by) values (%L,%L,10,'cash',%L)$q$, inv, accA, adm), 'payment on draft invoice');
+  perform test.fails(format($q$insert into payments (invoice_id,account_id,amount,method,recorded_by) values (%L,%L,10,'cash',%L)$q$, inv, accA, fin), 'payment on draft invoice');
   perform public.issue_invoice(inv);
   perform test.eq((select status::text from service_requests where id=req), 'invoiced', 'request invoiced');
   perform test.fails(format($q$insert into invoice_items (invoice_id,position,description,quantity,unit_price,source_type) values (%L,20,'late',1,1,'adjustment')$q$, inv), 'edit issued invoice');
   perform test.as_user(cA); perform test.eq(test.count('select 1 from invoices'), 1::bigint, 'customer sees issued invoice');
   perform test.as_user(cB); perform test.eq(test.count('select 1 from invoices'), 0::bigint, 'other customer sees no invoice');
-  perform test.as_user(adm);
-  insert into payments (invoice_id, account_id, amount, method, reference, recorded_by) values (inv, accA, 300, 'bank_transfer', 'TRX1', adm) returning id into pay;
+  perform test.as_user(fin);
+  insert into payments (invoice_id, account_id, amount, method, reference, recorded_by) values (inv, accA, 300, 'bank_transfer', 'TRX1', fin) returning id into pay;
   perform test.eq((select status::text from invoices where id=inv), 'partially_paid', 'partial payment');
-  perform test.fails(format($q$insert into payments (invoice_id,account_id,amount,method,recorded_by) values (%L,%L,300,'cash',%L)$q$, inv, accA, adm), 'overpayment');
+  perform test.fails(format($q$insert into payments (invoice_id,account_id,amount,method,recorded_by) values (%L,%L,300,'cash',%L)$q$, inv, accA, fin), 'overpayment');
   perform test.fails(format($q$update payments set amount=1 where id=%L$q$, pay), 'edit payment');
   perform test.fails(format($q$delete from payments where id=%L$q$, pay), 'delete payment');
-  insert into payments (invoice_id, account_id, amount, method, recorded_by) values (inv, accA, 283.20, 'duitnow_qr', adm);
+  insert into payments (invoice_id, account_id, amount, method, recorded_by) values (inv, accA, 283.20, 'duitnow_qr', fin);
   perform test.eq((select status::text from invoices where id=inv), 'paid', 'fully paid');
   perform test.eq((select status::text from service_requests where id=req), 'closed', 'request closed');
   perform public.void_payment(pay, 'Bounced');
@@ -230,11 +236,14 @@ begin
   perform test.eq((select status::text from service_requests where id=req), 'invoiced', 'request reopened to invoiced');
 
   -- ---------- audit ----------
+  perform test.as_user(adm); perform test.eq(test.count('select 1 from audit_logs'), 0::bigint, 'ops admin cannot read audit');
+  perform test.as_user(fin); perform test.fails(format($q$select public.create_quotation(%L)$q$, req), 'finance cannot create quotations');
+  perform test.as_user(sa);
   perform test.eq(test.count('select 1 from audit_logs'), test.count('select 1 from audit_logs'), 'admin reads audit');
   perform test.eq((test.count('select 1 from audit_logs where table_name=''payments'''))>=3, true, 'payments audited');
   perform test.eq((test.count('select 1 from audit_logs where table_name=''quotation_versions'''))>=4, true, 'quotation versions audited');
   perform test.as_user(cA); perform test.eq(test.count('select 1 from audit_logs'), 0::bigint, 'customer cannot read audit');
-  perform test.as_user(adm); perform test.fails('delete from audit_logs', 'delete audit');
+  perform test.as_user(sa); perform test.fails('delete from audit_logs', 'delete audit');
   perform test.fails('update audit_logs set action=''INSERT''', 'edit audit');
   perform test.as_system();
   perform test.fails('delete from audit_logs', 'superuser delete audit (trigger)');

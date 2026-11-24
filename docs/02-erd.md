@@ -61,3 +61,27 @@ erDiagram
 - **Partial unique indexes** encode business rules: one draft / one live offer / one approved version per quotation; one live booking per request; one live invoice per job; one active lead per job; one active assignment per worker per job.
 - **Generated columns** for line totals and line tax (no rounding drift between quotation → invoice).
 - `doc_counters` (numbering) and `audit_logs` are not shown; neither is reachable by clients except admin read of audit.
+
+## Spec modules added in migrations 014-017
+```mermaid
+erDiagram
+  SERVICE_REQUESTS ||--o{ INSPECTIONS : "free site visit"
+  INSPECTIONS ||--o{ INSPECTION_PHOTOS : "append-only"
+  PROFILES ||--o{ INSPECTIONS : "inspector"
+  SERVICE_CATEGORIES ||--o| CHECKLIST_TEMPLATES : "one active"
+  CHECKLIST_TEMPLATES ||--|{ CHECKLIST_TEMPLATE_ITEMS : has
+  JOBS ||--o{ JOB_CHECKLIST_ITEMS : "snapshot at booking"
+  JOBS ||--o{ JOB_MATERIALS : "qty only, append-only"
+  JOBS ||--o{ JOB_COST_ENTRIES : "finance ledger, void not edit"
+  JOB_MATERIALS ||--o{ JOB_COST_ENTRIES : "optional link (same job)"
+  OUTSOURCE_PARTNERS ||--o{ JOB_COST_ENTRIES : "partner charge"
+  JOBS ||--o| JOB_FEEDBACK : "one per verified job"
+  WORKERS ||--o{ WORKER_TIME_OFF : availability
+  PROFILES ||--o{ DEVICE_TOKENS : push
+  PROFILES ||--o{ NOTIFICATIONS : inbox
+  JOB_VERIFICATIONS { smallint quality_score "1-5" }
+  JOBS { timestamptz travel_started_at timestamptz arrived_at numeric arrival_lat "captured once at arrival" }
+  JOB_ASSIGNMENTS { text override_reason "required when worker has a conflict" }
+  APP_SETTINGS { text key PK jsonb value bool is_public }
+```
+Job status flow is now `scheduled → en_route → arrived → in_progress → pending_verification → verified` (or `rework_required → in_progress`).

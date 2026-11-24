@@ -1,15 +1,13 @@
 # 1. System architecture
 
 ## Shape
-One Next.js (App Router, TypeScript) application, three role-scoped areas, one Supabase project.
-No separate API server: the **database is the authority** (constraints, triggers, RLS, RPC functions);
-Next.js is a thin, typed UI + session layer.
+Two clients, one Supabase project: a native **Expo / React Native** app (customers, employees, outsourced workers; role decides the interface) and a **Next.js** admin dashboard (super / operations / finance admin, supervisors).
+No separate API server: the **database is the authority** (constraints, triggers, RLS, RPC functions); both clients are thin and typed.
+*(Updated for the master spec: the earlier PWA plan and the `/portal`, `/work` web areas are dropped. See `00-spec-review-and-delta.md`.)*
 
 ```
  Browser / installed PWA
-  ├─ /portal  (customers)      ┐
-  ├─ /admin   (operations)     ├─ Next.js 15 App Router  (Server Components, Server Actions, middleware)
-  └─ /work    (workers+supervisors, mobile-first PWA) ┘
+  Expo app (iOS/Android): customer · employee · outsourced worker      Next.js admin: super/ops/finance admin · supervisor
                          │  @supabase/ssr  (cookie session, user JWT)
                          ▼
    Supabase ── Auth (email+password / magic link, MFA for staff)
@@ -71,8 +69,8 @@ change_order: draft → sent → approved | rejected | withdrawn
 - Server Actions call RPCs and map Postgres errors (`42501`, `P0002`, `raise exception` text) to friendly messages.
 - Service-role client exists in one file (`lib/supabase/admin.ts`, `server-only`), used by the staff-provisioning action and the quote-expiry cron.
 
-## PWA
-Web manifest + installable shell for all areas; service worker (Serwist) with app-shell caching. Worker area additionally: offline queue (IndexedDB) for progress notes and photos with client-side image compression (≤1600px, JPEG) and retry on reconnect. Customer/admin areas are online-first. Push/WhatsApp/email notifications are a later module.
+## Mobile app (replaces the PWA plan)
+Expo Router, session in `expo-secure-store`, deep links for email confirmation/reset. Worker flows have an offline queue (SQLite) for progress notes, checklist ticks and photos, with on-device compression and retry. Push via `expo-notifications`: the database writes `notifications` rows, and the `notify-push` Edge Function (service role) sends them. EAS Build produces the store binaries.
 
 ## Non-functional
 - Security: email confirmation required, MFA (TOTP) mandatory for admin/supervisor, rate limiting on auth, strict CSP, signed URLs (short TTL) for files, MIME/size limits in buckets, service-role key server-only.

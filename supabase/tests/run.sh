@@ -10,4 +10,4 @@ P="psql -h /tmp -p $PORT -U postgres -v ON_ERROR_STOP=1 -q"
 $P -d postgres -c "drop database if exists bk" -c "create database bk"
 $P -d bk -f "$DIR/tests/00_supabase_stub.sql"
 for f in "$DIR"/migrations/*.sql; do $P -d bk -f "$f"; done
-$P -d bk -f "$DIR/tests/01_workflow_and_rls.sql"
+for t in "$DIR"/tests/0[1-9]_*.sql; do $P -d bk -f "$t"; done

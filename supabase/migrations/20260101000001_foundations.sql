@@ -9,7 +9,7 @@ grant usage on schema private to authenticated, service_role;
 -- ---------------------------------------------------------------------------
 -- Enumerations (statuses are enums so invalid states are unrepresentable)
 -- ---------------------------------------------------------------------------
-create type public.app_role            as enum ('customer', 'worker', 'supervisor', 'admin');
+create type public.app_role            as enum ('customer', 'worker', 'supervisor', 'super_admin', 'ops_admin', 'finance_admin');
 create type public.account_type        as enum ('individual', 'business');
 create type public.member_role         as enum ('owner', 'member');
 create type public.property_type       as enum ('landed_house', 'condominium', 'commercial', 'industrial', 'other');
@@ -26,7 +26,7 @@ create type public.quote_status        as enum (
   'draft','sent','approved','rejected','superseded','withdrawn','expired');
 create type public.booking_status      as enum ('confirmed', 'completed', 'cancelled');
 create type public.job_status          as enum (
-  'scheduled','in_progress','pending_verification','rework_required','verified','cancelled');
+  'scheduled','en_route','arrived','in_progress','pending_verification','rework_required','verified','cancelled');
 
 create type public.worker_type         as enum ('employee', 'outsourced');
 create type public.approval_status     as enum ('pending', 'approved', 'suspended', 'rejected');

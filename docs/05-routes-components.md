@@ -1,3 +1,5 @@
+> **Superseded.** The master specification replaced the PWA plan with a native Expo app (customers + workers) and an admin-only Next.js dashboard. The current navigation, folder layout and phases are in [`00-spec-review-and-delta.md`](00-spec-review-and-delta.md) sections 5-7. The conventions below (guards in layout + RLS as the real boundary, server-side mutations through RPCs, zod validation, one status-badge map) still apply to both apps.
+
 # 5. Route and component structure
 
 ## Folder layout

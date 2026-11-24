@@ -16,10 +16,19 @@ language sql stable security definer set search_path = '' as $$
   select p.role from public.profiles p where p.id = (select auth.uid()) and p.is_active
 $$;
 
-create function private.is_admin() returns boolean
+-- Capability helpers (super_admin implies every back-office capability)
+create function private.is_super_admin() returns boolean
 language sql stable security definer set search_path = '' as $$
-  select coalesce(private.current_app_role() = 'admin', false)
-$$;
+  select coalesce(private.current_app_role() = 'super_admin', false) $$;
+create function private.is_ops() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(private.current_app_role() in ('ops_admin', 'super_admin'), false) $$;
+create function private.is_finance() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(private.current_app_role() in ('finance_admin', 'super_admin'), false) $$;
+create function private.is_back_office() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(private.current_app_role() in ('ops_admin', 'finance_admin', 'super_admin'), false) $$;
 
 create function private.require_role(p_roles public.app_role[]) returns public.app_role
 language plpgsql stable security definer set search_path = '' as $$

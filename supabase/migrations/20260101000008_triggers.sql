@@ -46,12 +46,12 @@ language plpgsql as $$
 begin
   if private.is_direct_client() then
     if new.id <> old.id then raise exception 'profile id is immutable'; end if;
-    if not private.is_admin() then
+    if not private.is_super_admin() then
       if new.role <> old.role or new.is_active <> old.is_active or new.email <> old.email then
-        raise exception 'only an administrator can change role, email or active state' using errcode = '42501';
+        raise exception 'only a super administrator can change role, email or active state' using errcode = '42501';
       end if;
     elsif old.id = (select auth.uid()) and (new.role <> old.role or new.is_active <> old.is_active) then
-      raise exception 'administrators cannot change their own role or active state' using errcode = '42501';
+      raise exception 'super administrators cannot change their own role or active state' using errcode = '42501';
     end if;
   end if;
   return new;
@@ -268,7 +268,7 @@ create trigger workers_guard before insert or update on public.workers
 -- Bookings -------------------------------------------------------------------------------
 create function private.bookings_guard() returns trigger
 language plpgsql as $$
-declare v_ok boolean;
+declare v_ok boolean; v_conflict text;
 begin
   if tg_op = 'INSERT' then
     select exists (
@@ -300,6 +300,13 @@ begin
        or exists (select 1 from public.jobs j where j.booking_id = old.id and j.status <> 'scheduled') then
       raise exception 'a booking can only be rescheduled before work has started';
     end if;
+    select private.worker_conflicts(ja.worker_id, new.scheduled_start, new.scheduled_end, j.id) into v_conflict
+      from public.jobs j join public.job_assignments ja on ja.job_id = j.id and ja.released_at is null
+     where j.booking_id = old.id and private.worker_conflicts(ja.worker_id, new.scheduled_start, new.scheduled_end, j.id) is not null
+     limit 1;
+    if v_conflict is not null then
+      raise exception 'the new time conflicts for an assigned worker (%); release or reassign the worker first', v_conflict;
+    end if;
   end if;
   return new;
 end $$;
@@ -324,7 +331,9 @@ begin
         raise exception 'job status can only be changed through the workflow functions' using errcode = '42501';
       end if;
       if not ((old.status, new.status) in (
-           ('scheduled','in_progress'), ('scheduled','cancelled'),
+           ('scheduled','en_route'), ('scheduled','in_progress'), ('scheduled','cancelled'),
+           ('en_route','arrived'), ('en_route','in_progress'), ('en_route','cancelled'),
+           ('arrived','in_progress'), ('arrived','cancelled'),
            ('in_progress','pending_verification'),
            ('pending_verification','verified'), ('pending_verification','rework_required'),
            ('rework_required','in_progress'))) then
@@ -354,6 +363,7 @@ declare
   v_w public.workers;
   v_active boolean;
   v_partner public.outsource_partners;
+  v_conflict text;
 begin
   if tg_op = 'DELETE' then raise exception 'assignment history cannot be deleted'; end if;
 
@@ -373,6 +383,12 @@ begin
          or (v_partner.contract_expires_on is not null and v_partner.contract_expires_on < private.today_my()) then
         raise exception 'outsourcing partner is not currently approved';
       end if;
+    end if;
+    -- double-booking / leave: blocked unless an administrator records why it is acceptable
+    select private.worker_conflicts(new.worker_id, b.scheduled_start, b.scheduled_end, new.job_id) into v_conflict
+      from public.jobs j join public.bookings b on b.id = j.booking_id where j.id = new.job_id;
+    if v_conflict is not null and length(btrim(coalesce(new.override_reason, ''))) < 5 then
+      raise exception 'worker has a conflicting commitment (%); provide an override_reason to assign anyway', v_conflict;
     end if;
     new.assigned_by := coalesce((select auth.uid()), new.assigned_by);
     new.assigned_at := now();

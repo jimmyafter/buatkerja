@@ -4,12 +4,14 @@ The policies are in `supabase/migrations/20260101000011_rls.sql` (tables) and `â
 
 ## Pattern
 1. **Deny by default.** `revoke all` on every table from `anon`/`authenticated`, then grant only the verbs each table needs. RLS is enabled on every `public` table; `doc_counters` has no policy, so it is unreachable from clients.
-2. **Helpers, not joins.** Policies call `private.*` SECURITY DEFINER functions (`is_admin`, `is_account_member`, `is_assigned_to_job`, `is_job_supervisor`, `customer_can_see_version`, â€¦). They are not API-exposed, they avoid recursive RLS, and they return "no access" for deactivated users.
+2. **Helpers, not joins.** Policies call `private.*` SECURITY DEFINER functions (`is_super_admin`, `is_ops`, `is_finance`, `is_back_office`, `is_account_member`, `is_assigned_to_job`, `is_job_supervisor`, `customer_can_see_version`, â€¦). They are not API-exposed, they avoid recursive RLS, and they return "no access" for deactivated users.
 3. **initPlan caching.** Every helper call is wrapped as `(select private.fn())`, so Postgres evaluates it once per statement instead of once per row.
 4. **Status never comes from table writes.** Policies allow content edits; guard triggers reject any client change to a `status` column; RPC functions (run as the function owner) perform transitions.
 5. **No write policy = no write.** For example `job_photos` has insert only, `job_verifications` has select only, `payments` has insert only, and `storage.objects` for `job-photos` has no update/delete policy.
 
 ## Policy summary
+Read 'admin' below as: **reads = any back-office role; content writes = ops admin (+super); invoices, invoice lines, payments, documents and job costs = finance admin (+super); profiles update, audit log and settings = super admin.** Migrations 014-016 add the same pattern for time off, checklists, materials, inspections, job costs, feedback, settings, notifications and device tokens (customers get no policy on inspections, checklists, materials or costs; notifications and tokens are own-rows only).
+
 | Table | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
 | profiles | self, admin, supervisor of assigned worker | trigger only | self/admin (trigger blocks role/email/active unless admin) | â€“ |
@@ -40,4 +42,4 @@ The policies are in `supabase/migrations/20260101000011_rls.sql` (tables) and `â
 - **Offline approvals are explicit, never silent**: `respond_to_quotation` is customer-only; an admin must use `record_quotation_response` with an evidence note, which flags `admin_recorded` and posts a customer-visible timeline entry.
 
 ## Verification
-`supabase/tests/run.sh` rebuilds a scratch database from the migrations and runs ~90 assertions as seven different users (two customers, admin, supervisor, three workers) plus `anon`: isolation between customers, worker scoping, draft invisibility, frozen versions, immutable evidence and audit, invoice-line tampering, overpayment, and bypass attempts (direct status update, self-promotion).
+`supabase/tests/run.sh` rebuilds a scratch database from all migrations and runs two suites (about 185 assertions) as customers, ops/finance/super admins, a supervisor, employee and outsourced workers, plus `anon`: isolation between customers, worker scoping, draft invisibility, frozen versions, immutable evidence and audit, invoice-line tampering, overpayment, and bypass attempts (direct status update, self-promotion), plus double-booking and leave conflicts, checklist gating, inspections, costs, feedback, role-restricted reports, notifications and settings.

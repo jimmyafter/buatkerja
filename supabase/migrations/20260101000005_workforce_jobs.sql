@@ -79,6 +79,11 @@ create table public.jobs (
   site_contact_name  text,
   site_contact_phone text,
   site_access_notes  text,
+  travel_started_at  timestamptz,
+  arrived_at         timestamptz,
+  arrival_lat        numeric(9,6) check (arrival_lat between -90 and 90),
+  arrival_lng        numeric(9,6) check (arrival_lng between -180 and 180),
+  arrival_accuracy_m numeric(8,1),
   started_at         timestamptz,
   submitted_at       timestamptz,
   verified_at        timestamptz,
@@ -102,6 +107,7 @@ create table public.job_assignments (
   assigned_at   timestamptz not null default now(),
   released_at   timestamptz,
   release_reason text,
+  override_reason text,                     -- required when the worker has a conflicting commitment
   check (released_at is null or release_reason is not null)
 );
 create unique index ja_one_active_per_worker on public.job_assignments (job_id, worker_id) where released_at is null;

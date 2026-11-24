@@ -15,24 +15,24 @@ on conflict (id) do update
 -- request attachments
 create policy "ra read" on storage.objects for select to authenticated
   using (bucket_id = 'request-attachments'
-    and ((select private.is_admin())
+    and ((select private.is_back_office())
          or (select private.is_account_member(private.try_uuid((storage.foldername(name))[1])))));
 create policy "ra upload" on storage.objects for insert to authenticated
   with check (bucket_id = 'request-attachments'
     and cardinality(storage.foldername(name)) = 2
-    and ((select private.is_admin())
+    and ((select private.is_ops())
          or (select private.can_attach_to_request(private.try_uuid((storage.foldername(name))[2]),
                                                   private.try_uuid((storage.foldername(name))[1])))));
 create policy "ra delete" on storage.objects for delete to authenticated
   using (bucket_id = 'request-attachments'
-    and ((select private.is_admin())
+    and ((select private.is_ops())
          or (select private.can_attach_to_request(private.try_uuid((storage.foldername(name))[2]),
                                                   private.try_uuid((storage.foldername(name))[1])))));
 
 -- job photos: assigned workers write once; no update/delete policy => immutable
 create policy "jp read" on storage.objects for select to authenticated
   using (bucket_id = 'job-photos'
-    and ((select private.is_admin())
+    and ((select private.is_back_office())
          or (select private.is_assigned_to_job(private.try_uuid((storage.foldername(name))[1])))
          or (select private.is_job_supervisor(private.try_uuid((storage.foldername(name))[1])))
          or (select private.customer_can_see_job_photo_path(name))));
@@ -45,8 +45,8 @@ create policy "jp upload" on storage.objects for insert to authenticated
 -- documents: admin writes, owning customer reads
 create policy "doc read" on storage.objects for select to authenticated
   using (bucket_id = 'documents'
-    and ((select private.is_admin())
+    and ((select private.is_back_office())
          or (select private.is_account_member(private.try_uuid((storage.foldername(name))[1])))));
 create policy "doc admin write" on storage.objects for all to authenticated
-  using (bucket_id = 'documents' and (select private.is_admin()))
-  with check (bucket_id = 'documents' and (select private.is_admin()));
+  using (bucket_id = 'documents' and (select private.is_finance()))
+  with check (bucket_id = 'documents' and (select private.is_finance()));

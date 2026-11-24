@@ -4,12 +4,12 @@
 -- authorisation rule lives next to the state change, not in the web app.
 --   customer : create_customer_account, submit_service_request, cancel_service_request,
 --              respond_to_quotation, respond_to_change_order
---   admin    : review_service_request, create_quotation, create_quotation_revision,
+--   ops admin: review_service_request, create_quotation, create_quotation_revision,
 --              send_quotation_version, withdraw_quotation_version, confirm_booking,
 --              cancel_booking, create_change_order, send_change_order,
---              withdraw_change_order, create_invoice_draft, issue_invoice,
---              void_invoice, void_payment, record_quotation_response,
---              record_change_order_response (customer decision received offline)
+--              withdraw_change_order,
+--              record_quotation_response, record_change_order_response (offline decisions)
+--   finance  : create_invoice_draft, issue_invoice, void_invoice, void_payment
 --   worker   : start_job, submit_job_for_verification
 --   supervisor: verify_job
 --   system   : expire_stale_quotations (service_role / cron only)
@@ -54,9 +54,9 @@ create function public.submit_service_request(p_request_id uuid, p_note text def
 returns void language plpgsql security definer set search_path = '' as $$
 declare r public.service_requests;
 begin
-  perform private.require_role(array['customer','admin']::public.app_role[]);
+  perform private.require_role(array['customer','ops_admin','super_admin']::public.app_role[]);
   select * into r from public.service_requests where id = p_request_id for update;
-  if not found or not (private.is_admin() or private.is_account_member(r.account_id)) then
+  if not found or not (private.is_ops() or private.is_account_member(r.account_id)) then
     raise exception 'request not found' using errcode = 'P0002';
   end if;
 
@@ -84,10 +84,10 @@ create function public.cancel_service_request(p_request_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 declare r public.service_requests;
 begin
-  perform private.require_role(array['customer','admin']::public.app_role[]);
+  perform private.require_role(array['customer','ops_admin','super_admin']::public.app_role[]);
   if p_reason is null or length(btrim(p_reason)) < 3 then raise exception 'a reason is required'; end if;
   select * into r from public.service_requests where id = p_request_id for update;
-  if not found or not (private.is_admin() or private.is_account_member(r.account_id)) then
+  if not found or not (private.is_ops() or private.is_account_member(r.account_id)) then
     raise exception 'request not found' using errcode = 'P0002';
   end if;
   if r.status not in ('draft','submitted','under_review','info_requested','quoted','approved') then
@@ -172,7 +172,7 @@ end $$;
 create function public.record_quotation_response(p_version_id uuid, p_decision text, p_note text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   if p_note is null or length(btrim(p_note)) < 10 then
     raise exception 'describe how the customer responded (who, channel, when) - at least 10 characters';
   end if;
@@ -182,7 +182,7 @@ end $$;
 create function public.record_change_order_response(p_co_id uuid, p_decision text, p_note text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   if p_note is null or length(btrim(p_note)) < 10 then
     raise exception 'describe how the customer responded (who, channel, when) - at least 10 characters';
   end if;
@@ -195,7 +195,7 @@ create function public.review_service_request(p_request_id uuid, p_action text, 
 returns void language plpgsql security definer set search_path = '' as $$
 declare r public.service_requests;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into r from public.service_requests where id = p_request_id for update;
   if not found then raise exception 'request not found' using errcode = 'P0002'; end if;
 
@@ -205,6 +205,7 @@ begin
     if p_note is null or length(btrim(p_note)) = 0 then raise exception 'say what information is needed'; end if;
     update public.service_requests set status = 'info_requested' where id = r.id;
     perform private.add_request_note(r.id, p_note, true);
+    perform private.notify_account(r.account_id, 'info_requested', 'We need more information', btrim(p_note), 'service_request', r.id);
   elsif p_action = 'reject' then
     if p_note is null or length(btrim(p_note)) < 3 then raise exception 'a reason is required'; end if;
     update public.quotation_versions v set status = 'withdrawn'
@@ -220,7 +221,7 @@ create function public.create_quotation(p_request_id uuid, p_valid_until date de
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare r public.service_requests; v_q uuid; v_ver uuid;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into r from public.service_requests where id = p_request_id for update;
   if not found then raise exception 'request not found' using errcode = 'P0002'; end if;
   insert into public.quotations (quote_no, request_id, account_id, created_by)
@@ -236,7 +237,7 @@ create function public.create_quotation_revision(p_quotation_id uuid)
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare q public.quotations; prev public.quotation_versions; v_new uuid; v_status public.request_status;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into q from public.quotations where id = p_quotation_id for update;
   if not found then raise exception 'quotation not found' using errcode = 'P0002'; end if;
   select status into v_status from public.service_requests where id = q.request_id;
@@ -258,7 +259,7 @@ create function public.send_quotation_version(p_version_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v public.quotation_versions; q public.quotations; v_status public.request_status;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into v from public.quotation_versions where id = p_version_id for update;
   if not found then raise exception 'version not found' using errcode = 'P0002'; end if;
   select * into q from public.quotations where id = v.quotation_id for update;
@@ -273,13 +274,15 @@ begin
      set status = 'sent', sent_at = now(), sent_by = (select auth.uid())
    where id = v.id;
   perform private.set_request_status(q.request_id, 'quoted');
+  perform private.notify_account(q.account_id, 'quotation_ready', 'Your quotation is ready',
+          'Please review and approve it before ' || to_char(v.valid_until, 'DD Mon YYYY'), 'service_request', q.request_id);
 end $$;
 
 create function public.withdraw_quotation_version(p_version_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v public.quotation_versions; q public.quotations;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into v from public.quotation_versions where id = p_version_id for update;
   if not found or v.status <> 'sent' then raise exception 'only a sent version can be withdrawn'; end if;
   select * into q from public.quotations where id = v.quotation_id;
@@ -295,7 +298,7 @@ declare
   r public.service_requests; v public.quotation_versions; p public.properties;
   v_booking uuid; v_job uuid; v_scope text;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into r from public.service_requests where id = p_request_id for update;
   if not found then raise exception 'request not found' using errcode = 'P0002'; end if;
   if r.status <> 'approved' then raise exception 'the customer must approve a quotation first (request is %)', r.status; end if;
@@ -324,7 +327,14 @@ begin
           r.contact_name, r.contact_phone, p.access_notes)
   returning id into v_job;
 
+  insert into public.job_checklist_items (job_id, position, label, is_required)
+  select v_job, ti.position, ti.label, ti.is_required
+    from public.checklist_template_items ti
+    join public.checklist_templates t on t.id = ti.template_id and t.is_active and t.category_id = r.category_id;
+
   perform private.set_request_status(r.id, 'booked');
+  perform private.notify_account(r.account_id, 'booking_confirmed', 'Your booking is confirmed',
+          to_char(p_start at time zone 'Asia/Kuala_Lumpur', 'DD Mon YYYY HH24:MI'), 'service_request', r.id);
   return jsonb_build_object('booking_id', v_booking, 'job_id', v_job);
 end $$;
 
@@ -332,12 +342,12 @@ create function public.cancel_booking(p_booking_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 declare b public.bookings; j public.jobs;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   if p_reason is null or length(btrim(p_reason)) < 3 then raise exception 'a reason is required'; end if;
   select * into b from public.bookings where id = p_booking_id for update;
   if not found or b.status <> 'confirmed' then raise exception 'booking is not active'; end if;
   select * into j from public.jobs where booking_id = b.id for update;
-  if j.status <> 'scheduled' then raise exception 'work has already started on this job (%)', j.status; end if;
+  if j.status not in ('scheduled', 'en_route', 'arrived') then raise exception 'work has already started on this job (%)', j.status; end if;
 
   update public.job_assignments set released_at = now(), release_reason = 'booking cancelled'
    where job_id = j.id and released_at is null;
@@ -351,7 +361,7 @@ create function public.create_change_order(
 ) returns uuid language plpgsql security definer set search_path = '' as $$
 declare j public.jobs; v_id uuid;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   select * into j from public.jobs where id = p_job_id;
   if not found then raise exception 'job not found' using errcode = 'P0002'; end if;
   insert into public.change_orders (co_no, job_id, account_id, source_request_id, title, description, created_by)
@@ -367,16 +377,20 @@ end $$;
 
 create function public.send_change_order(p_co_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
+declare v_account uuid;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
-  update public.change_orders set status = 'sent', sent_at = now() where id = p_co_id and status = 'draft';
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
+  update public.change_orders set status = 'sent', sent_at = now() where id = p_co_id and status = 'draft'
+  returning account_id into v_account;
   if not found then raise exception 'only a draft change order can be sent'; end if;
+  perform private.notify_account(v_account, 'change_order_ready', 'Additional work needs your approval',
+          'Extra work has been found. Please review the price before we proceed.', 'change_order', p_co_id);
 end $$;
 
 create function public.withdraw_change_order(p_co_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['ops_admin','super_admin']::public.app_role[]);
   update public.change_orders set status = 'withdrawn', response_note = p_reason
    where id = p_co_id and status in ('draft', 'sent');
   if not found then raise exception 'change order cannot be withdrawn'; end if;
@@ -386,7 +400,7 @@ create function public.create_invoice_draft(p_job_id uuid)
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare j public.jobs; v_ver uuid; v_inv uuid; v_pos int;
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['finance_admin','super_admin']::public.app_role[]);
   select * into j from public.jobs where id = p_job_id for update;
   if not found then raise exception 'job not found' using errcode = 'P0002'; end if;
   if j.status <> 'verified' then raise exception 'the job must be verified by the supervisor first'; end if;
@@ -419,7 +433,7 @@ create function public.issue_invoice(p_invoice_id uuid, p_due_date date default 
 returns text language plpgsql security definer set search_path = '' as $$
 declare i public.invoices; v_no text; v_issue date := private.today_my();
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['finance_admin','super_admin']::public.app_role[]);
   select * into i from public.invoices where id = p_invoice_id for update;
   if not found or i.status <> 'draft' then raise exception 'only a draft invoice can be issued'; end if;
   if i.total <= 0 then raise exception 'invoice total must be greater than zero'; end if;
@@ -428,13 +442,15 @@ begin
      set status = 'issued', invoice_no = v_no, issue_date = v_issue,
          due_date = coalesce(p_due_date, v_issue + 14), issued_by = (select auth.uid())
    where id = i.id;
+  perform private.notify_account(i.account_id, 'invoice_issued', 'Your invoice is ready',
+          'Invoice ' || v_no || ' has been issued.', 'invoice', i.id);
   return v_no;
 end $$;
 
 create function public.void_invoice(p_invoice_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['finance_admin','super_admin']::public.app_role[]);
   if p_reason is null or length(btrim(p_reason)) < 3 then raise exception 'a reason is required'; end if;
   update public.invoices set status = 'void', void_reason = btrim(p_reason)
    where id = p_invoice_id and status = 'issued';
@@ -444,7 +460,7 @@ end $$;
 create function public.void_payment(p_payment_id uuid, p_reason text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  perform private.require_role(array['admin']::public.app_role[]);
+  perform private.require_role(array['finance_admin','super_admin']::public.app_role[]);
   if p_reason is null or length(btrim(p_reason)) < 3 then raise exception 'a reason is required'; end if;
   update public.payments set voided_at = now(), voided_by = (select auth.uid()), void_reason = btrim(p_reason)
    where id = p_payment_id and voided_at is null;
@@ -460,12 +476,12 @@ begin
   perform private.require_role(array['worker']::public.app_role[]);
   select * into j from public.jobs where id = p_job_id for update;
   if not found or not private.is_assigned_to_job(j.id) then raise exception 'job not found' using errcode = 'P0002'; end if;
-  if j.status not in ('scheduled', 'rework_required') then raise exception 'job cannot be started from status %', j.status; end if;
+  if j.status not in ('scheduled', 'en_route', 'arrived', 'rework_required') then raise exception 'job cannot be started from status %', j.status; end if;
   update public.jobs set status = 'in_progress', started_at = coalesce(started_at, now()) where id = j.id;
-  if j.status = 'scheduled' then perform private.set_request_status(j.request_id, 'in_progress'); end if;
+  if j.status in ('scheduled', 'en_route', 'arrived') then perform private.set_request_status(j.request_id, 'in_progress'); end if;
   insert into public.job_progress_updates (job_id, author_id, note, progress_pct)
   values (j.id, (select auth.uid()),
-          case j.status when 'scheduled' then 'Work started' else 'Rework started' end, null);
+          case j.status when 'rework_required' then 'Rework started' else 'Work started' end, null);
 end $$;
 
 create function public.submit_job_for_verification(p_job_id uuid, p_summary text default null)
@@ -486,6 +502,10 @@ begin
     raise exception 'at least one AFTER photo is required (taken since the last rejection)';
   end if;
 
+  if exists (select 1 from public.job_checklist_items where job_id = j.id and is_required and not is_done) then
+    raise exception 'complete all required checklist items first';
+  end if;
+
   insert into public.job_progress_updates (job_id, author_id, note, progress_pct)
   values (j.id, (select auth.uid()), coalesce(nullif(btrim(p_summary), ''), 'Submitted for verification'), 100);
   update public.jobs set status = 'pending_verification', submitted_at = now() where id = j.id;
@@ -493,7 +513,7 @@ end $$;
 
 -- ============================ SUPERVISOR ====================================
 
-create function public.verify_job(p_job_id uuid, p_result public.verification_result, p_notes text default null)
+create function public.verify_job(p_job_id uuid, p_result public.verification_result, p_notes text default null, p_quality_score smallint default null)
 returns void language plpgsql security definer set search_path = '' as $$
 declare j public.jobs;
 begin
@@ -502,13 +522,15 @@ begin
   if not found or not private.is_job_supervisor(j.id) then raise exception 'job not found' using errcode = 'P0002'; end if;
   if j.status <> 'pending_verification' then raise exception 'job is not awaiting verification (%)', j.status; end if;
 
-  insert into public.job_verifications (job_id, supervisor_id, result, notes)
-  values (j.id, (select auth.uid()), p_result, nullif(btrim(p_notes), ''));
+  insert into public.job_verifications (job_id, supervisor_id, result, notes, quality_score)
+  values (j.id, (select auth.uid()), p_result, nullif(btrim(p_notes), ''), p_quality_score);
 
   if p_result = 'passed' then
     update public.jobs set status = 'verified', verified_at = now() where id = j.id;
     update public.bookings set status = 'completed' where id = j.booking_id;
     perform private.set_request_status(j.request_id, 'completed');
+    perform private.notify_account(j.account_id, 'job_completed', 'Your job is complete',
+            'The work has been checked by our supervisor. We would love your feedback.', 'job', j.id);
   else
     update public.jobs set status = 'rework_required' where id = j.id;
   end if;
